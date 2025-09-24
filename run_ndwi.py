@@ -4,15 +4,15 @@ from src.io_utils import load_image
 from src.ndwi import compute_ndwi
 from src.plot_utils import save_gray, save_heat
 
-IMG_PATH = "data/imagen_profesor.tif"  # cambia si tu archivo es otro
-GREEN_IDX = 1   # <- AJUSTA según tus bandas
-NIR_IDX   = 3   # <- AJUSTA según tus bandas
+IMG_PATH = "data/imagen_profesor.tif"   # cambia si el nombre/ext es otro
+GREEN_IDX = 1   # AJUSTA según tus bandas
+NIR_IDX   = 3   # AJUSTA según tus bandas
 
 def pick_band(arr, idx):
     if arr.ndim == 3 and arr.shape[0] in (3,4,5,6,7,8) and arr.shape[1] > 32:
-        return arr[idx]              # (Bands,H,W)
+        return arr[idx]          # (Bands,H,W)
     elif arr.ndim == 3:
-        return arr[..., idx]         # (H,W,C)
+        return arr[..., idx]     # (H,W,Channels)
     raise ValueError(f"Forma no soportada: {arr.shape}")
 
 def main():
@@ -26,5 +26,7 @@ def main():
     save_gray(green, "outputs/green.png", "Green")
     save_gray(nir,   "outputs/nir.png",   "NIR")
     save_heat(ndwi,  "outputs/ndwi.png",  "NDWI")
-    print("Listo. Mira outputs/: green.png, nir.png, ndwi.png")
-if __name__ == "__main__": main()
+    print("Generado: outputs/green.png, nir.png, ndwi.png")
+
+if __name__ == "__main__":
+    main()
