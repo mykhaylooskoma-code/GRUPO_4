@@ -3,3 +3,8 @@ rasterio
 matplotlib
 requests
 tqdm
+scipy
+PySide6>=6.9.2,<7.0.0
+shapely
+geopandas
+mask
