@@ -1,7 +1,4 @@
-"""
-CDIO1 - Session 11
-Advanced Time Series Analysis - Coastal Erosion Prediction
-"""
+# Advanced Time Series Analysis - Coastal Erosion Prediction
 
 import pandas as pd
 import numpy as np
@@ -17,12 +14,8 @@ print("=" * 70)
 print("ADVANCED TIME SERIES ANALYSIS - COASTAL DATASET")
 print("=" * 70)
 
-# ============================================================================
-# 1. LOAD DATA
-# ============================================================================
+# Carguem data generada en la sessió 10
 print("\n[1] LOADING CLEAN MONTHLY SERIES...")
-
-# Usa la serie generada en la sesión 10
 file = "mean_series_monthly.csv"
 ts = pd.read_csv(file, index_col=0, parse_dates=True)
 ts = ts.squeeze()  # convertir dataframe a serie
@@ -38,21 +31,16 @@ plt.legend()
 plt.grid(alpha=0.3)
 plt.show()
 
-# ============================================================================
-# 2. TREND ANALYSIS (LINEAR REGRESSION)
-# ============================================================================
+# Tendència (regressió lineal)
 print("\n" + "=" * 70)
 print("[2] TREND ANALYSIS (LINEAR REGRESSION)")
 print("=" * 70)
-
 n = len(ts)
 X = np.arange(n).reshape(-1, 1)
 y = ts.values
-
 model = LinearRegression()
 model.fit(X, y)
 trend = model.predict(X)
-
 slope = model.coef_[0]
 intercept = model.intercept_
 r2 = model.score(X, y)
@@ -60,7 +48,7 @@ rmse = np.sqrt(mean_squared_error(y, trend))
 
 print(f"Trend slope: {slope:.6f} m/month  ({slope*12:.3f} m/year)")
 print(f"R²: {r2:.3f}, RMSE: {rmse:.3f} m")
-
+# Fem la gràfica
 plt.figure(figsize=(12, 5))
 plt.plot(ts.index, y, label="Observed")
 plt.plot(ts.index, trend, label="Linear trend", color="red")
@@ -71,26 +59,20 @@ plt.legend()
 plt.grid(alpha=0.3)
 plt.show()
 
-# ============================================================================
-# 3. REMOVE TREND & APPLY FFT
-# ============================================================================
+# Remove trend i apliquem FFT
 print("\n" + "=" * 70)
 print("[3] FREQUENCY ANALYSIS (FFT)")
 print("=" * 70)
 
-# Remove trend to analyze periodic components
 ts_detrended = y - trend
 
-# Apply FFT
 fft_values = fft(ts_detrended)
 fft_freq = fftfreq(n, d=1)  # d=1 → monthly sampling
 magnitude = np.abs(fft_values)
-
-# Keep only positive frequencies
-positive_idx = fft_freq >= 0
+positive_idx = fft_freq >= 0 # deixem f>0
 freqs = fft_freq[positive_idx]
 magnitudes = magnitude[positive_idx]
-
+# i dibuixem la gràfica
 plt.figure(figsize=(10, 5))
 plt.plot(freqs, magnitudes)
 plt.title("FFT Spectrum (Magnitude vs Frequency)")
@@ -98,24 +80,20 @@ plt.xlabel("Frequency [cycles/month]")
 plt.ylabel("Magnitude")
 plt.grid(alpha=0.3)
 plt.show()
-
-# Find top dominant frequencies
 sorted_idx = np.argsort(magnitudes)[::-1]
-top_freqs = freqs[sorted_idx][:5]
+top_freqs = freqs[sorted_idx][:5] # Seleccionem les freqüències superiors
 top_periods = 1 / top_freqs
 print("\nTop 5 detected cycles:")
 for i, (f, p) in enumerate(zip(top_freqs, top_periods)):
     if np.isfinite(p):
         print(f"  {i+1}. Period: {p:.2f} months  (freq={f:.4f})")
 
-# ============================================================================
-# 4. FILTER & RECONSTRUCT SIGNAL
-# ============================================================================
+# Filtrem i reconstruim el senyal
 print("\n" + "=" * 70)
-print("[4] SIGNAL RECONSTRUCTION")
+print("RECONSTRUCCIÓ DEL SENYAL")
 print("=" * 70)
 
-# Keep only the strongest frequencies
+# Conserva les freqüències superiors
 threshold = np.sort(magnitude)[-3]  # top 3 frequencies
 fft_filtered = fft_values.copy()
 fft_filtered[magnitude < threshold] = 0
@@ -132,26 +110,22 @@ plt.ylabel("Distance (m)")
 plt.legend()
 plt.grid(alpha=0.3)
 plt.show()
-
-# Evaluate reconstruction
 rmse_reconstructed = np.sqrt(mean_squared_error(y, reconstructed))
 r2_reconstructed = r2_score(y, reconstructed)
 print(f"Reconstructed model → RMSE: {rmse_reconstructed:.3f}, R²: {r2_reconstructed:.3f}")
 
-# ============================================================================
-# 5. FORECASTING 2025
-# ============================================================================
+# Fem forecasting d'aquest any
 print("\n" + "=" * 70)
-print("[5] FORECASTING (2025)")
+print("FORECASTING (2025)")
 print("=" * 70)
 
 n_future = 6  # 6 months ahead (Jan–Jun 2025)
 t_future = np.arange(n, n + n_future)
 
-# Predict future trend
+# Predim un model per la tendència
 trend_future = model.predict(t_future.reshape(-1, 1))
 
-# Reconstruct future cyclic pattern
+# Future cyclic pattern
 mask = magnitude >= threshold
 significant_freq = fft_freq[mask]
 significant_fft = fft_values[mask]
@@ -183,25 +157,21 @@ plt.show()
 forecast_series.to_csv("forecast_2025.csv")
 print("\nForecast saved as 'forecast_2025.csv'")
 
-# ============================================================================
-# 6. OPTIONAL: STRUCTURAL BREAK (STORM GLORIA)
-# ============================================================================
+# Evaluem el Glòria
 print("\n" + "=" * 70)
-print("[6] STRUCTURAL BREAK (OPTIONAL)")
+print("STRUCTURAL BREAK")
 print("=" * 70)
 
-# Example: sudden change near Feb 2020 (Storm Gloria)
+# Fem l'exemple amb el Glòria
 try:
     t = np.arange(len(ts)).reshape(-1, 1)
     t_jump = ts.index.get_loc(pd.to_datetime("2020-02-01"))
     step = (t.flatten() >= t_jump).astype(int).reshape(-1, 1)
     X_break = np.hstack([t, step])
     y = ts.values
-
     model_break = LinearRegression()
     model_break.fit(X_break, y)
     y_pred_break = model_break.predict(X_break)
-
     plt.figure(figsize=(12, 5))
     plt.plot(ts.index, y, label="Observed")
     plt.plot(ts.index, y_pred_break, color="green", label="Trend + Step (Gloria)")
