@@ -1,60 +1,35 @@
+import os
 import json
+import argparse
 import numpy as np
 import pandas as pd
+from PIL import Image, ImageDraw, ImageFont
 
-def generate_fake_pre_post(h=256, w=256, seed=7):
-    """
-    Genera dos imágenes fake (pre y post) tipo 'intensidad' en [0,1].
-    - pre: textura urbana + ruido
-    - post: igual, pero con 'zonas dañadas' añadidas (cambios fuertes)
-    """
-    rng = np.random.default_rng(seed)
+def ensure_dir(path: str):
+    os.makedirs(path, exist_ok=True)
 
-    # "Textura urbana" simple: base + ruido suave + patrones
-    base = rng.normal(0.5, 0.08, size=(h, w))
-    stripes = (np.sin(np.linspace(0, 12*np.pi, w))[None, :] * 0.03)
-    pre = np.clip(base + stripes + rng.normal(0, 0.02, size=(h, w)), 0, 1)
+def save_gray_png(arr01: np.ndarray, path: str):
+    arr255 = (np.clip(arr01, 0, 1) * 255).astype(np.uint8)
+    Image.fromarray(arr255, mode="L").save(path)
 
-    post = pre.copy()
+def load_image_rgb(path: str):
+    return Image.open(path).convert("RGB")
 
-    # Añadimos 3-6 "manchas de daño" (rectángulos) con cambios de intensidad
-    n_patches = rng.integers(3, 7)
-    patches = []
-    for _ in range(n_patches):
-        ph = int(rng.integers(h//12, h//5))
-        pw = int(rng.integers(w//12, w//5))
-        y0 = int(rng.integers(0, h - ph))
-        x0 = int(rng.integers(0, w - pw))
-
-        delta = float(rng.uniform(0.25, 0.55))  # cambio "fuerte"
-        sign = 1 if rng.random() < 0.5 else -1
-
-        post[y0:y0+ph, x0:x0+pw] = np.clip(
-            post[y0:y0+ph, x0:x0+pw] + sign * delta, 0, 1
-        )
-        patches.append({"x0": x0, "y0": y0, "w": pw, "h": ph, "delta": sign*delta})
-
-    return pre, post, patches
+def rgb_to_gray01(img_rgb: Image.Image):
+    arr = np.asarray(img_rgb).astype(np.float32) / 255.0
+    return arr.mean(axis=2)
 
 def change_map(pre, post):
-    """Mapa de cambio simple y robusto."""
     return np.abs(post - pre)
 
-def quality_indicators(pre, post, cm):
-    """
-    Indicadores simples de 'calidad/fiabilidad' para el informe:
-    - media de cambio, percentil 95, %pixeles con cambio alto
-    """
-    p95 = float(np.percentile(cm, 95))
-    mean = float(cm.mean())
-    high = float((cm > 0.25).mean())  # umbral simple
-    return {"change_mean": mean, "change_p95": p95, "pct_high_change": high}
+def quality_indicators(cm):
+    return {
+        "change_mean": float(cm.mean()),
+        "change_p95": float(np.percentile(cm, 95)),
+        "pct_high_change_thr025": float((cm > 0.25).mean())
+    }
 
-def tile_scores(cm, tile=32, thr=0.18):
-    """
-    Divide la imagen en teselas tile x tile y calcula un score por tesela:
-    score = % de píxeles con cambio > thr
-    """
+def tile_scores(cm, tile=64, thr=0.22):
     h, w = cm.shape
     nty = h // tile
     ntx = w // tile
@@ -65,26 +40,25 @@ def tile_scores(cm, tile=32, thr=0.18):
             y0 = ty * tile
             x0 = tx * tile
             block = cm[y0:y0+tile, x0:x0+tile]
+
+            # Score: % de píxeles con cambio mayor que umbral
             score = float((block > thr).mean())
+
             rows.append({
                 "tile_id": f"T{ty:02d}_{tx:02d}",
                 "ty": ty, "tx": tx,
-                "x0": x0, "y0": y0,
-                "tile_size": tile,
+                "x0": int(x0), "y0": int(y0),
+                "tile_size": int(tile),
                 "damage_score": score
             })
+
     df = pd.DataFrame(rows).sort_values("damage_score", ascending=False).reset_index(drop=True)
     return df
 
-def tiles_to_geojson(df, crs_name="PIXEL_COORDS"):
-    """
-    GeoJSON simple en coordenadas de píxel (no georreferenciado).
-    En producción, esto iría con CRS real (UTM/latlon) usando geocodificación.
-    """
+def tiles_to_geojson(df, crs_note="PIXEL_COORDS"):
     features = []
     for _, r in df.iterrows():
         x0, y0, t = int(r.x0), int(r.y0), int(r.tile_size)
-        # Polígono (x, y) cerrando el anillo
         poly = [[
             [x0, y0],
             [x0 + t, y0],
@@ -104,36 +78,125 @@ def tiles_to_geojson(df, crs_name="PIXEL_COORDS"):
     return {
         "type": "FeatureCollection",
         "name": "conflictdamage_tiles",
-        "crs_note": crs_name,
+        "crs_note": crs_note,
         "features": features
     }
 
-def main():
-    pre, post, patches = generate_fake_pre_post()
-    cm = change_map(pre, post)
-    qi = quality_indicators(pre, post, cm)
+def draw_grid_on_image(img_rgb: Image.Image, tile: int, out_path: str):
+    img = img_rgb.copy()
+    draw = ImageDraw.Draw(img)
+    w, h = img.size
 
-    df = tile_scores(cm, tile=32, thr=0.18)
+    # Líneas verticales
+    for x in range(0, w, tile):
+        draw.line([(x, 0), (x, h)], width=1)
+    # Líneas horizontales
+    for y in range(0, h, tile):
+        draw.line([(0, y), (w, y)], width=1)
+
+    img.save(out_path)
+
+def draw_top_tiles_overlay(img_rgb: Image.Image, df: pd.DataFrame, k: int, out_path: str):
+    """
+    Dibuja rectángulos en las K teselas con más score.
+    (Para que el profe vea qué zonas detecta como más dañadas.)
+    """
+    img = img_rgb.copy()
+    draw = ImageDraw.Draw(img)
+
+    top = df.head(k)
+    for i, r in enumerate(top.itertuples(index=False), start=1):
+        x0, y0, t = int(r.x0), int(r.y0), int(r.tile_size)
+        draw.rectangle([x0, y0, x0+t, y0+t], width=3)
+        # etiqueta simple
+        draw.text((x0+3, y0+3), f"{i}:{r.damage_score:.2f}")
+
+    img.save(out_path)
+
+def tile_score_map_image(df: pd.DataFrame, width: int, height: int, tile: int):
+    """
+    Crea una imagen gris donde cada tesela tiene intensidad proporcional al score.
+    (0=negro, 1=blanco)
+    """
+    img = np.zeros((height, width), dtype=np.float32)
+
+    for r in df.itertuples(index=False):
+        x0, y0, t = int(r.x0), int(r.y0), int(r.tile_size)
+        val = float(r.damage_score)
+        img[y0:y0+t, x0:x0+t] = val
+
+    return img
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--pre", type=str, required=True, help="Imagen PRE (jpg/png)")
+    parser.add_argument("--post", type=str, required=True, help="Imagen POST (jpg/png)")
+    parser.add_argument("--tile", type=int, default=64, help="Tamaño tesela (pixeles)")
+    parser.add_argument("--thr", type=float, default=0.22, help="Umbral cambio para score")
+    parser.add_argument("--topk", type=int, default=10, help="Teselas top para marcar")
+    parser.add_argument("--outdir", type=str, default="outputs", help="Carpeta salida")
+    args = parser.parse_args()
+
+    ensure_dir(args.outdir)
+
+    # Cargar imágenes RGB reales
+    pre_rgb = load_image_rgb(args.pre)
+    post_rgb = load_image_rgb(args.post)
+
+    # Asegurar mismo tamaño: reescalamos POST al tamaño de PRE
+    W, H = pre_rgb.size
+    post_rgb = post_rgb.resize((W, H), Image.BILINEAR)
+
+    pre = rgb_to_gray01(pre_rgb)
+    post = rgb_to_gray01(post_rgb)
+
+    cm = change_map(pre, post)
+    qi = quality_indicators(cm)
+
+    df = tile_scores(cm, tile=args.tile, thr=args.thr)
     top10 = df.head(10)
 
-    geojson = tiles_to_geojson(df)
+    # Outputs “docs”
+    df.to_csv(os.path.join(args.outdir, "tiles.csv"), index=False)
+    with open(os.path.join(args.outdir, "tiles.geojson"), "w", encoding="utf-8") as f:
+        json.dump(tiles_to_geojson(df), f, ensure_ascii=False, indent=2)
 
-    # Outputs
-    df.to_csv("outputs_conflictdamage_tiles.csv", index=False)
-    with open("outputs_conflictdamage_tiles.geojson", "w", encoding="utf-8") as f:
-        json.dump(geojson, f, ensure_ascii=False, indent=2)
-
-    with open("outputs_conflictdamage_report.json", "w", encoding="utf-8") as f:
+    with open(os.path.join(args.outdir, "report.json"), "w", encoding="utf-8") as f:
         json.dump({
+            "mode": "real_images",
+            "pre_image": args.pre,
+            "post_image": args.post,
+            "image_size": {"width": int(W), "height": int(H)},
+            "params": {"tile": args.tile, "thr": args.thr, "topk": args.topk},
             "quality_indicators": qi,
-            "generated_patches": patches,
             "top10_tiles": top10.to_dict(orient="records")
         }, f, ensure_ascii=False, indent=2)
 
-    print("OK ✅ Generado:")
-    print("- outputs_conflictdamage_tiles.csv")
-    print("- outputs_conflictdamage_tiles.geojson")
-    print("- outputs_conflictdamage_report.json")
+    # Imágenes que ayudan al profe a entender el cálculo
+    save_gray_png(pre, os.path.join(args.outdir, "pre_gray.png"))
+    save_gray_png(post, os.path.join(args.outdir, "post_gray.png"))
+
+    cm_norm = cm / (cm.max() + 1e-9)
+    save_gray_png(cm_norm, os.path.join(args.outdir, "change_map.png"))
+    mask = (cm > args.thr).astype(np.float32)
+    save_gray_png(mask, os.path.join(args.outdir, "change_mask.png"))
+
+    # Cuadrículas
+    draw_grid_on_image(pre_rgb, args.tile, os.path.join(args.outdir, "pre_grid.png"))
+    draw_grid_on_image(post_rgb, args.tile, os.path.join(args.outdir, "post_grid.png"))
+
+    # Marcar top K teselas sobre el POST (lo más convincente)
+    draw_top_tiles_overlay(post_rgb, df, args.topk, os.path.join(args.outdir, "post_top_tiles.png"))
+
+    # Imagen de “score por teselas”
+    score_img = tile_score_map_image(df, W, H, args.tile)
+    save_gray_png(score_img, os.path.join(args.outdir, "tile_score_map.png"))
+
+    print("OK ✅ Generado en:", args.outdir)
+    print("- tiles.csv / tiles.geojson / report.json")
+    print("- pre_grid.png / post_grid.png")
+    print("- post_top_tiles.png (top teselas marcadas)")
+    print("- tile_score_map.png (score por teselas)")
     print("\nTop 5 tiles por score:")
     print(df.head(5)[["tile_id", "damage_score"]])
 
